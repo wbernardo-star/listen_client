@@ -28,7 +28,7 @@ def transcribe_audio(path: str) -> str:
         res = openai_client.audio.transcriptions.create(
             model="whisper-1",
             file=f,
-            laguage="en"
+            laguage="en",
         )
     return (res.text or "").strip()
 
