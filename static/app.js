@@ -23,7 +23,7 @@ async function startRecording() {
   mediaRecorder.onstop = async () => {
     // We are definitely stopped here, so reset the UI
     recordBtn.classList.remove("recording");
-    recordBtn.textContent = "🎙 Start Recording";
+    recordBtn.textContent = "Tap to Talk";
 
     statusEl.textContent = "Uploading audio...";
     const blob = new Blob(chunks, { type: "audio/webm" });
@@ -70,7 +70,7 @@ async function startRecording() {
   // Start recording & update UI
   mediaRecorder.start();
   recordBtn.classList.add("recording");
-  recordBtn.textContent = "⏹ Stop Recording";
+  recordBtn.textContent = "Tap to Stop";
   statusEl.textContent = "Recording...";
 }
 
@@ -88,7 +88,7 @@ recordBtn.addEventListener("click", () => {
       console.error("Error starting recording:", err);
       statusEl.textContent = "Cannot access microphone.";
       recordBtn.classList.remove("recording");
-      recordBtn.textContent = "🎙 Start Recording";
+      recordBtn.textContent = "Tap To Talk";
     });
   } else {
     // Stop the current recording
