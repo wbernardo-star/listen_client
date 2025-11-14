@@ -2,16 +2,16 @@
 <html>
 <head>
   <meta charset='utf-8'>
-  <title>listen_client Voice Agent</title>
+  <title>listen_client Voice AI Agent</title>
   <link rel='stylesheet' href='/static/styles.css'>
 </head>
 <body>
 <div class='container'>
-  <h1>listen_client Voice Agent</h1>
+  <h1>listen_client Voice AI</h1>
   <button id='recordBtn'>Tap To Talk</button>
   <p id='status'></p>
-  <h2>You said:</h2><pre id='userText'></pre>
-  <h2>Reply:</h2><pre id='replyText'></pre>
+  <h2>You said (OpenAI Whisper STT):</h2><pre id='userText'></pre>
+  <h2>Reply (Elevenlabs TTS) + (MCP Orchestrator):</h2><pre id='replyText'></pre>
   <audio id='replyAudio' controls></audio>
 </div>
 <script src='/static/app.js'></script>
