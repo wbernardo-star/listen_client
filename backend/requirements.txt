@@ -1,5 +1,0 @@
-flask
-gunicorn
-httpx
-openai
-python-dotenv
