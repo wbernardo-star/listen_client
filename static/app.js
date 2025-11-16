@@ -1,105 +1,97 @@
-(() => {
-  // ========================================================
-  //  NEW: Generate or reuse persistent client_id 
-  // ========================================================
-  function getOrCreateClientId() {
-    const key = "blink_client_id";
-    try {
-      let id = localStorage.getItem(key);
-      if (!id) {
-        id = "web-" + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
-        localStorage.setItem(key, id);
-      }
-      return id;
-    } catch (e) {
-      return "web-anon-" + Math.random().toString(36).slice(2);
-    }
-  }
+let mediaRecorder = null;
+let chunks = [];
 
-  const CLIENT_ID = getOrCreateClientId();
-  console.log("[Blink] client_id =", CLIENT_ID);
+const recordBtn = document.getElementById("recordBtn");
+const statusEl = document.getElementById("status");
+const userTextEl = document.getElementById("userText");
+const replyTextEl = document.getElementById("replyText");
+const replyAudioEl = document.getElementById("replyAudio");
 
-  // ========== existing UI code ==========
-  const chat = document.getElementById('chat');
-  const mic = document.getElementById('micButton');
-  const label = document.getElementById('micLabel');
-  const dot = document.getElementById('statusDot');
-  const status = document.getElementById('statusText');
+async function startRecording() {
+  chunks = [];
 
-  let mediaStream = null;
-  let recorder = null;
-  let chunks = [];
-  let recording = false;
+  // Ask for mic
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream);
 
-  mic.onclick = async () => {
-    if (!recording) {
-      startRecording();
-    } else {
-      stopRecording();
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) {
+      chunks.push(e.data);
     }
   };
 
-  async function startRecording() {
+  mediaRecorder.onstop = async () => {
+    // We are definitely stopped here, so reset the UI
+    recordBtn.classList.remove("recording");
+    recordBtn.textContent = "Tap to Talk";
+
+    statusEl.textContent = "Uploading audio...";
+    const blob = new Blob(chunks, { type: "audio/webm" });
+    const formData = new FormData();
+    formData.append("audio", blob, "recording.webm");
+
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recorder = new MediaRecorder(mediaStream);
+      const res = await fetch("/api/voice", {
+        method: "POST",
+        body: formData,
+      });
 
-      recorder.ondataavailable = (e) => chunks.push(e.data);
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        console.error("Failed to parse JSON:", e);
+        statusEl.textContent = "Backend returned non-JSON error.";
+        return;
+      }
 
-      recorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: 'audio/wav' });
-        chunks = [];
-        await sendAudio(blob);
-      };
+      if (!res.ok || data.error) {
+        console.error("API error:", data);
+        statusEl.textContent = "Error: " + (data.error || res.status);
+        return;
+      }
 
-      recorder.start();
-      recording = true;
-      label.textContent = "Stop Recording";
-      dot.style.background = "red";
-      status.textContent = "Listening...";
-    } catch (e) {
-      alert("Microphone error: " + e.message);
+      userTextEl.textContent = data.user_text || "";
+      replyTextEl.textContent = data.reply_text || "";
+
+      if (data.audio_base64 && data.audio_mime) {
+        const src = `data:${data.audio_mime};base64,${data.audio_base64}`;
+        replyAudioEl.src = src;
+        replyAudioEl.play();
+      }
+
+      statusEl.textContent = "Done.";
+    } catch (err) {
+      console.error("Fetch error:", err);
+      statusEl.textContent = "Network/Fetch error. See console.";
     }
+  };
+
+  // Start recording & update UI
+  mediaRecorder.start();
+  recordBtn.classList.add("recording");
+  recordBtn.textContent = "Tap to Stop";
+  statusEl.textContent = "Recording...";
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+    // we reset text in onstop, so no need to touch it here
   }
+}
 
-  function stopRecording() {
-    if (recorder && recording) {
-      recorder.stop();
-      mediaStream.getTracks().forEach(t => t.stop());
-    }
-    recording = false;
-    label.textContent = "Start Recording";
-    dot.style.background = "green";
-    status.textContent = "Processing...";
+recordBtn.addEventListener("click", () => {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") {
+    // Start a new recording
+    startRecording().catch((err) => {
+      console.error("Error starting recording:", err);
+      statusEl.textContent = "Cannot access microphone.";
+      recordBtn.classList.remove("recording");
+      recordBtn.textContent = "Tap To Talk";
+    });
+  } else {
+    // Stop the current recording
+    stopRecording();
   }
-
-  // ========================================================
-  // NEW: Send audio + client_id to Flask backend
-  // ========================================================
-  async function sendAudio(blob) {
-    const fd = new FormData();
-    fd.append("audio", blob, "speech.wav");
-    fd.append("client_id", CLIENT_ID);   // <---- IMPORTANT
-
-    const resp = await fetch("/api/voice", { method: "POST", body: fd });
-    const j = await resp.json();
-
-    chat.value += "You: " + j.user_text + "\n";
-    chat.value += "Blink: " + j.reply_text + "\n\n";
-
-    // Play TTS audio
-    if (j.audio_base64) {
-      const audio = new Audio("data:" + j.audio_mime + ";base64," + j.audio_base64);
-      audio.play();
-    }
-
-    if (j.session_done) {
-      status.textContent = "Order Complete. Session ended.";
-      dot.style.background = "gray";
-    } else {
-      status.textContent = "Ready";
-      dot.style.background = "green";
-    }
-  }
-
-})();
+});
