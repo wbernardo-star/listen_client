@@ -1,26 +1,40 @@
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8"/>
-<title>Matrix Voice Assistant</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <meta charset="utf-8"/>
+  <title>Matrix Voice Assistant</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
-<div class="va-shell">
-<header class="va-header">
-<div class="va-title">NEURAL INTERFACE</div>
-<div class="va-subtitle">VOICE CHANNEL ACTIVE</div>
-</header>
-<main class="va-main"><div id="chat" class="va-chat"></div></main>
-<footer class="va-footer">
-<div class="va-status">
-<span id="statusDot" class="va-dot va-dot-idle"></span>
-<span id="statusText">Ready</span>
-</div>
-<button id="micButton" class="va-mic-btn"><span id="micLabel">Open Voice Link</span></button>
-</footer>
-</div>
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+  <div class="va-shell">
+    <header class="va-header">
+      <div class="va-title">NEURAL INTERFACE</div>
+      <div class="va-subtitle">VOICE CHANNEL ACTIVE</div>
+    </header>
+
+    <main class="va-main">
+      <div id="chat" class="va-chat"></div>
+    </main>
+
+    <footer class="va-footer">
+      <!-- DEBUG PANEL (Device & Session IDs) -->
+      <div class="va-debug-panel">
+        <div><strong>Device ID:</strong> <span id="deviceIdLabel">loading...</span></div>
+        <div><strong>Session ID:</strong> <span id="sessionIdLabel">loading...</span></div>
+      </div>
+
+      <div class="va-status">
+        <span id="statusDot" class="va-dot va-dot-idle"></span>
+        <span id="statusText">Ready</span>
+      </div>
+
+      <button id="micButton" class="va-mic-btn">
+        <span id="micLabel">Open Voice Link</span>
+      </button>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
