@@ -1,93 +1,118 @@
-#listen_client-main/app.py
-
-
 import os
+import base64
 from tempfile import NamedTemporaryFile
+
 from flask import Flask, render_template, request, jsonify
-import httpx
-import uuid
 from dotenv import load_dotenv
+import httpx
+from openai import OpenAI
 
 load_dotenv()
 
-ORCHESTRATOR_URL = os.getenv("MCP_ORCH_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
 
-from tts import tts
-from stt import transcribe
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY not set")
+if not ORCHESTRATOR_URL:
+    raise RuntimeError("ORCHESTRATOR_URL not set")
 
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
+def transcribe_audio(path: str) -> str:
+    with open(path, "rb") as f:
+        res = openai_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=f,
+        )
+    return (res.text or "").strip()
+
+def call_orchestrator(text: str) -> dict:
+    session_id = "web-user-1:web"
+    payload = {
+        "channel": "web",
+        "user_id": "web-user-1",
+        "session_id": session_id,
+        "text": text,
+    }
+    resp = httpx.post(ORCHESTRATOR_URL, json=payload, timeout=30.0)
+    resp.raise_for_status()
+    return resp.json()
+
+def elevenlabs_tts(text: str):
+    if not ELEVENLABS_API_KEY:
+        return None, None
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL_ID,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }
+    try:
+        resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+        resp.raise_for_status()
+    except Exception as e:
+        print("ElevenLabs TTS error:", e)
+        return None, None
+
+    audio_bytes = resp.content
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    mime = resp.headers.get("Content-Type", "audio/mpeg")
+    return audio_b64, mime
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-
 @app.route("/api/voice", methods=["POST"])
 def api_voice():
     if "audio" not in request.files:
-        return jsonify({"error": "no_audio"}), 400
+        return jsonify({"error": "no audio"}), 400
 
-    f = request.files["audio"]
+    file = request.files["audio"]
+    if file.filename == "":
+        return jsonify({"error": "empty filename"}), 400
 
-    with NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        f.save(tmp.name)
-        audio_path = tmp.name
+    with NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+        file.save(tmp.name)
+        path = tmp.name
 
     try:
-        # --- STT ---
-        text = transcribe(audio_path)
-        if not text:
-            return jsonify({"error": "empty_transcript"}), 200
+        user_text = transcribe_audio(path)
+        if not user_text:
+            return jsonify({"error": "empty transcription"}), 200
 
-        # ===========================================================
-        # NEW: Get client_id from widget; create session_id
-        # ===========================================================
-        client_id = request.form.get("client_id")
-        if not client_id:
-            client_id = f"web-anon-{uuid.uuid4()}"
+        orc = call_orchestrator(user_text)
+        reply_text = orc.get("reply_text") or orc.get("reply", {}).get("reply_text")
+        if not reply_text:
+            return jsonify({"error": "no reply_text", "raw": orc}), 200
 
-        session_id = client_id
-        user_id = client_id
-
-        # ===========================================================
-        # Call MCP Orchestrator using client session IDs
-        # ===========================================================
-        payload = {
-            "channel": "web_widget",
-            "user_id": user_id,
-            "session_id": session_id,
-            "text": text
-        }
-
-        r = httpx.post(ORCHESTRATOR_URL, json=payload, timeout=40.0)
-        r.raise_for_status()
-
-        orchestrator = r.json()
-        reply_text = orchestrator.get("reply_text", "")
-        
-        # Does orchestrator say the flow is complete?
-        session_done = orchestrator.get("session_done", False)
-        if orchestrator.get("debug", {}).get("session_done"):
-            session_done = True
-
-        # --- ElevenLabs TTS ---
-        audio_b64, mime = tts(reply_text)
+        audio_b64, mime = elevenlabs_tts(reply_text)
 
         return jsonify({
-            "user_text": text,
+            "user_text": user_text,
             "reply_text": reply_text,
             "audio_base64": audio_b64,
             "audio_mime": mime,
-            "session_done": session_done,
         })
-
     finally:
         try:
-            os.remove(audio_path)
+            os.remove(path)
         except:
             pass
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
