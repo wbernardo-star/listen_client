@@ -1,5 +1,6 @@
 import os
 import base64
+import uuid
 from tempfile import NamedTemporaryFile
 
 from flask import Flask, render_template, request, jsonify
@@ -23,19 +24,30 @@ if not ORCHESTRATOR_URL:
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
+
+# ---------------------------------------------------------
+#  Whisper STT
+# ---------------------------------------------------------
 def transcribe_audio(path: str) -> str:
     with open(path, "rb") as f:
         res = openai_client.audio.transcriptions.create(
             model="whisper-1",
             file=f,
         )
-    return (res.text or "").strip()
+    # Depending on SDK version, res may have `.text` or be a plain string
+    text = getattr(res, "text", None)
+    if text is None:
+        text = str(res)
+    return (text or "").strip()
 
-def call_orchestrator(text: str) -> dict:
-    session_id = "web-user-1:web"
+
+# ---------------------------------------------------------
+#  MCP Orchestrator call (multi-session aware)
+# ---------------------------------------------------------
+def call_orchestrator(text: str, *, user_id: str, session_id: str, channel: str = "web_widget") -> dict:
     payload = {
-        "channel": "web",
-        "user_id": "web-user-1",
+        "channel": channel,
+        "user_id": user_id,
         "session_id": session_id,
         "text": text,
     }
@@ -43,6 +55,10 @@ def call_orchestrator(text: str) -> dict:
     resp.raise_for_status()
     return resp.json()
 
+
+# ---------------------------------------------------------
+#  ElevenLabs TTS
+# ---------------------------------------------------------
 def elevenlabs_tts(text: str):
     if not ELEVENLABS_API_KEY:
         return None, None
@@ -73,9 +89,14 @@ def elevenlabs_tts(text: str):
     mime = resp.headers.get("Content-Type", "audio/mpeg")
     return audio_b64, mime
 
+
+# ---------------------------------------------------------
+#  Routes
+# ---------------------------------------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
+
 
 @app.route("/api/voice", methods=["POST"])
 def api_voice():
@@ -86,33 +107,58 @@ def api_voice():
     if file.filename == "":
         return jsonify({"error": "empty filename"}), 400
 
+    # Save temp audio file
     with NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
         file.save(tmp.name)
         path = tmp.name
 
     try:
+        # 1) STT
         user_text = transcribe_audio(path)
         if not user_text:
             return jsonify({"error": "empty transcription"}), 200
 
-        orc = call_orchestrator(user_text)
+        # 2) Multi-session IDs from frontend
+        #    (sent from app.js as FormData fields)
+        device_id = request.form.get("device_id")
+        session_id = request.form.get("session_id")
+
+        if not device_id:
+            device_id = f"device-anon-{uuid.uuid4()}"
+        if not session_id:
+            session_id = f"sess-{uuid.uuid4()}"
+
+        user_id = device_id  # device identity == user identity
+
+        # 3) Call MCP Orchestrator with per-device + per-session IDs
+        orc = call_orchestrator(
+            user_text,
+            user_id=user_id,
+            session_id=session_id,
+            channel="web_widget",
+        )
+
         reply_text = orc.get("reply_text") or orc.get("reply", {}).get("reply_text")
         if not reply_text:
             return jsonify({"error": "no reply_text", "raw": orc}), 200
 
+        # 4) TTS via ElevenLabs
         audio_b64, mime = elevenlabs_tts(reply_text)
 
-        return jsonify({
-            "user_text": user_text,
-            "reply_text": reply_text,
-            "audio_base64": audio_b64,
-            "audio_mime": mime,
-        })
+        return jsonify(
+            {
+                "user_text": user_text,
+                "reply_text": reply_text,
+                "audio_base64": audio_b64,
+                "audio_mime": mime,
+            }
+        )
     finally:
         try:
             os.remove(path)
-        except:
+        except Exception:
             pass
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
