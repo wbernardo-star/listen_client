@@ -1,17 +1,23 @@
-// Matrix Voice Assistant - unified app.js
-// Uses: micButton, statusText, statusDot, chat (Matrix UI)
-// Adapts the logic from listen_channel app.js
+// ============================================================
+// Matrix Voice Assistant - app.js
+// - Per-device ID  (persistent in localStorage)
+// - Per-page/tab SESSION_ID
+// - Shows both IDs on page
+// - Matrix UI: micButton, micLabel, statusDot, statusText, chat
+// - Records audio, sends to /api/voice, plays TTS
+// ============================================================
+
 (() => {
   console.log("[MatrixVA] app.js loaded");
 
-  // ---------- Persistent Client ID for multi-session ----------
-  function getOrCreateClientId() {
-    const key = "matrix_client_id";
+  // -------------------- DEVICE ID (per device) --------------------
+  function getOrCreateDeviceId() {
+    const key = "matrix_device_id";
     try {
       let id = localStorage.getItem(key);
       if (!id) {
         id =
-          "web-" +
+          "device-" +
           (crypto.randomUUID
             ? crypto.randomUUID()
             : Math.random().toString(36).slice(2));
@@ -19,12 +25,25 @@
       }
       return id;
     } catch (e) {
-      return "web-anon-" + Math.random().toString(36).slice(2);
+      return "device-anon-" + Math.random().toString(36).slice(2);
     }
   }
+  const DEVICE_ID = getOrCreateDeviceId();
+  console.log("[MatrixVA] DEVICE_ID:", DEVICE_ID);
 
-  const CLIENT_ID = getOrCreateClientId();
-  console.log("[MatrixVA] CLIENT_ID:", CLIENT_ID);
+  // -------------------- SESSION ID (per page/tab) --------------------
+  const SESSION_ID =
+    "sess-" +
+    (crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2));
+  console.log("[MatrixVA] SESSION_ID:", SESSION_ID);
+
+  // -------------------- Inject IDs into webpage labels --------------------
+  const deviceLabelEl = document.getElementById("deviceIdLabel");
+  const sessionLabelEl = document.getElementById("sessionIdLabel");
+  if (deviceLabelEl) deviceLabelEl.textContent = DEVICE_ID;
+  if (sessionLabelEl) sessionLabelEl.textContent = SESSION_ID;
 
   // ---------- DOM elements (Matrix HTML) ----------
   const micButton = document.getElementById("micButton");
@@ -44,12 +63,12 @@
 
   // ---------- UI helpers ----------
   function setStatus(text, dotClass) {
-    statusText.textContent = text;
-    statusDot.className = "va-dot " + dotClass;
+    if (statusText) statusText.textContent = text;
+    if (statusDot) statusDot.className = "va-dot " + dotClass;
   }
 
   function appendChat(role, text) {
-    if (!text) return;
+    if (!chat || !text) return;
     const div = document.createElement("div");
     div.className = "va-msg va-" + role;
     div.textContent = text;
@@ -74,13 +93,16 @@
       mediaRecorder.onstop = async () => {
         // Reset UI state at stop
         micButton.classList.remove("recording");
-        micLabel.textContent = "Open Voice Link";
+        if (micLabel) micLabel.textContent = "Open Voice Link";
         setStatus("Uploading audio...", "va-dot-busy");
 
         const blob = new Blob(chunks, { type: "audio/webm" });
         const formData = new FormData();
         formData.append("audio", blob, "recording.webm");
-        formData.append("client_id", CLIENT_ID);
+
+        // 🔑 Send both device_id and session_id
+        formData.append("device_id", DEVICE_ID);
+        formData.append("session_id", SESSION_ID);
 
         try {
           const res = await fetch("/api/voice", {
@@ -126,13 +148,13 @@
       // Start recording & update UI
       mediaRecorder.start();
       micButton.classList.add("recording");
-      micLabel.textContent = "Stop";
+      if (micLabel) micLabel.textContent = "Stop";
       setStatus("Recording...", "va-dot-live");
     } catch (err) {
       console.error("Error starting recording:", err);
       setStatus("Cannot access microphone.", "va-dot-error");
       micButton.classList.remove("recording");
-      micLabel.textContent = "Open Voice Link";
+      if (micLabel) micLabel.textContent = "Open Voice Link";
     }
   }
 
@@ -153,4 +175,7 @@
       stopRecording();
     }
   });
+
+  // Initial status
+  setStatus("Ready", "va-dot-idle");
 })();
