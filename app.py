@@ -14,11 +14,13 @@ ELEVENLABS_MODEL_ID=os.getenv('ELEVENLABS_MODEL_ID','eleven_multilingual_v2')
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
+###This is for the voice input to be transcribed using OpenAI Whisper STT or speech-to-text####
 def transcribe(path):
     with open(path,'rb') as f:
         r = client.audio.transcriptions.create(model='whisper-1', file=f, language='en')
     return r.text or ''
 
+###This is for the MCP Orchestrator to strictly process the user's intent controlling the session, state and memory (temp)###
 def call_mcp(t):
     r = httpx.post(ORCHESTRATOR_URL, json={
         'channel':'web','user_id':'listen-user','session_id':'listen-user:web','text':t
@@ -26,6 +28,7 @@ def call_mcp(t):
     r.raise_for_status()
     return r.json()
 
+###This is for the reply to be outputed as VOICE via Elevelabs API###
 def tts(text):
     if not ELEVENLABS_API_KEY:
         return None,None
