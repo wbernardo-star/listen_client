@@ -14,21 +14,28 @@
     </header>
 
     <main class="va-main">
+
       <div id="chat" class="va-chat"></div>
 
-      <!-- Visible playback player -->
-      <div class="va-audio-wrapper">
-        <audio id="replyAudio" controls style="width:100%; margin-top:8px;">
-          Your browser does not support the audio element.
-        </audio>
+      <!-- AUDIO PLAYER WRAPPER (hidden by default) -->
+      <div class="va-audio-toggle-wrapper">
+        <button id="togglePlayerBtn" class="va-toggle-btn">Show Player</button>
+
+        <div id="audioPlayerContainer" class="va-audio-container hidden">
+          <audio id="replyAudio" controls style="width:100%;">
+            Your browser does not support the audio element.
+          </audio>
+        </div>
       </div>
+
     </main>
 
     <footer class="va-footer">
-      <!-- DEBUG PANEL (Device & Session IDs) -->
+      <!-- DEBUG PANEL (Device & Session IDs + TTS status) -->
       <div class="va-debug-panel">
         <div><strong>Device ID:</strong> <span id="deviceIdLabel">loading...</span></div>
         <div><strong>Session ID:</strong> <span id="sessionIdLabel">loading...</span></div>
+        <div><strong>TTS Status:</strong> <span id="ttsStatusLabel">unknown</span></div>
       </div>
 
       <div class="va-status">
