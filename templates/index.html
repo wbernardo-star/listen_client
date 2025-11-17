@@ -1,54 +1,240 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Matrix Voice Assistant</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-</head>
-<body>
-  <div class="va-shell">
-    <header class="va-header">
-      <div class="va-title">NEURAL INTERFACE</div>
-      <div class="va-subtitle">VOICE CHANNEL ACTIVE</div>
-    </header>
+// ============================================================
+// Matrix Voice Assistant - app.js
+// - Per-device ID  (persistent in localStorage)
+// - Per-page/tab SESSION_ID
+// - Shows Device ID / Session ID / TTS Status
+// - Toggleable audio player at bottom
+// ============================================================
 
-    <main class="va-main">
+(() => {
+  console.log("[MatrixVA] app.js loaded");
 
-      <div id="chat" class="va-chat"></div>
+  // -------------------- DEVICE ID (per device) --------------------
+  function getOrCreateDeviceId() {
+    const key = "matrix_device_id";
+    try {
+      let id = localStorage.getItem(key);
+      if (!id) {
+        id =
+          "device-" +
+          (crypto.randomUUID
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2));
+        localStorage.setItem(key, id);
+      }
+      return id;
+    } catch (e) {
+      return "device-anon-" + Math.random().toString(36).slice(2);
+    }
+  }
+  const DEVICE_ID = getOrCreateDeviceId();
+  console.log("[MatrixVA] DEVICE_ID:", DEVICE_ID);
 
-      <!-- AUDIO PLAYER WRAPPER (hidden by default) -->
-      <div class="va-audio-toggle-wrapper">
-        <button id="togglePlayerBtn" class="va-toggle-btn">Show Player</button>
+  // -------------------- SESSION ID (per page/tab) --------------------
+  const SESSION_ID =
+    "sess-" +
+    (crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2));
+  console.log("[MatrixVA] SESSION_ID:", SESSION_ID);
 
-        <div id="audioPlayerContainer" class="va-audio-container hidden">
-          <audio id="replyAudio" controls style="width:100%;">
-            Your browser does not support the audio element.
-          </audio>
-        </div>
-      </div>
+  // -------------------- Inject IDs into webpage labels --------------------
+  const deviceLabelEl = document.getElementById("deviceIdLabel");
+  const sessionLabelEl = document.getElementById("sessionIdLabel");
+  const ttsStatusLabel = document.getElementById("ttsStatusLabel");
 
-    </main>
+  if (deviceLabelEl) deviceLabelEl.textContent = DEVICE_ID;
+  if (sessionLabelEl) sessionLabelEl.textContent = SESSION_ID;
+  if (ttsStatusLabel) ttsStatusLabel.textContent = "idle";
 
-    <footer class="va-footer">
-      <!-- DEBUG PANEL (Device & Session IDs + TTS status) -->
-      <div class="va-debug-panel">
-        <div><strong>Device ID:</strong> <span id="deviceIdLabel">loading...</span></div>
-        <div><strong>Session ID:</strong> <span id="sessionIdLabel">loading...</span></div>
-        <div><strong>TTS Status:</strong> <span id="ttsStatusLabel">unknown</span></div>
-      </div>
+  // ---------- DOM elements (Matrix HTML) ----------
+  const micButton = document.getElementById("micButton");
+  const micLabel = document.getElementById("micLabel");
+  const statusDot = document.getElementById("statusDot");
+  const statusText = document.getElementById("statusText");
+  const chat = document.getElementById("chat");
+  const replyAudioEl = document.getElementById("replyAudio");
 
-      <div class="va-status">
-        <span id="statusDot" class="va-dot va-dot-idle"></span>
-        <span id="statusText">Ready</span>
-      </div>
+  const togglePlayerBtn = document.getElementById("togglePlayerBtn");
+  const audioPlayerContainer = document.getElementById("audioPlayerContainer");
 
-      <button id="micButton" class="va-mic-btn">
-        <span id="micLabel">Open Voice Link</span>
-      </button>
-    </footer>
-  </div>
+  if (!micButton) {
+    console.error("[MatrixVA] micButton not found in DOM");
+    return;
+  }
 
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
-</body>
-</html>
+  // ---------- Toggle player visibility ----------
+  if (togglePlayerBtn && audioPlayerContainer) {
+    togglePlayerBtn.addEventListener("click", () => {
+      const isHidden = audioPlayerContainer.classList.contains("hidden");
+
+      if (isHidden) {
+        audioPlayerContainer.classList.remove("hidden");
+        togglePlayerBtn.textContent = "Hide Player";
+      } else {
+        audioPlayerContainer.classList.add("hidden");
+        togglePlayerBtn.textContent = "Show Player";
+      }
+    });
+  }
+
+  // Recording state
+  let mediaRecorder = null;
+  let chunks = [];
+
+  // ---------- UI helpers ----------
+  function setStatus(text, dotClass) {
+    if (statusText) statusText.textContent = text;
+    if (statusDot) statusDot.className = "va-dot " + dotClass;
+  }
+
+  function setTtsStatus(status) {
+    if (!ttsStatusLabel) return;
+
+    let label = status;
+    if (status === "ok") label = "OK";
+    else if (status === "quota_exceeded") label = "Quota exceeded";
+    else if (status === "missing_api_key") label = "Missing API key";
+    else if (status === "auth_error") label = "Auth error";
+    else if (status === "rate_limited") label = "Rate limited";
+    else if (status === "network_error") label = "Network error";
+    else if (status === "error") label = "Error";
+    else if (!status) label = "unknown";
+
+    ttsStatusLabel.textContent = label;
+  }
+
+  function appendChat(role, text) {
+    if (!chat || !text) return;
+    const div = document.createElement("div");
+    div.className = "va-msg va-" + role;
+    div.textContent = text;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  // ---------- Start recording ----------
+  async function startRecording() {
+    chunks = [];
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        micButton.classList.remove("recording");
+        if (micLabel) micLabel.textContent = "Open Voice Link";
+        setStatus("Uploading audio...", "va-dot-busy");
+
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        const formData = new FormData();
+        formData.append("audio", blob, "recording.webm");
+        formData.append("device_id", DEVICE_ID);
+        formData.append("session_id", SESSION_ID);
+
+        try {
+          const res = await fetch("/api/voice", {
+            method: "POST",
+            body: formData,
+          });
+
+          let data;
+          try {
+            data = await res.json();
+          } catch (e) {
+            console.error("Failed to parse JSON:", e);
+            setStatus("Backend returned non-JSON error.", "va-dot-error");
+            setTtsStatus("error");
+            return;
+          }
+
+          console.log("[MatrixVA] /api/voice response:", data);
+
+          if (data.user_text) appendChat("user", data.user_text);
+          if (data.reply_text) appendChat("bot", data.reply_text);
+
+          // --- Update TTS status from backend ---
+          if (data.tts_status) {
+            setTtsStatus(data.tts_status);
+          } else if (data.audio_base64) {
+            setTtsStatus("ok");
+          } else {
+            setTtsStatus("error");
+          }
+
+          // --- Playback if audio is present ---
+          if (data.audio_base64 && data.audio_mime) {
+            const src = `data:${data.audio_mime};base64,${data.audio_base64}`;
+            console.log("[TTS] Audio length:", data.audio_base64.length);
+
+            if (replyAudioEl) {
+              replyAudioEl.src = src;
+              replyAudioEl.load();
+              replyAudioEl
+                .play()
+                .then(() => console.log("[TTS] Playback OK"))
+                .catch((err) => console.error("[TTS] Playback failed:", err));
+            } else {
+              const audio = new Audio(src);
+              audio
+                .play()
+                .then(() =>
+                  console.log("[TTS] Playback OK via new Audio()")
+                )
+                .catch((err) =>
+                  console.error("[TTS] Playback failed via new Audio():", err)
+                );
+            }
+          } else {
+            console.warn("[TTS] No audio returned from ElevenLabs.");
+          }
+
+          if (data.session_done) {
+            setStatus("Order complete — session reset.", "va-dot-idle");
+          } else {
+            setStatus("Ready", "va-dot-idle");
+          }
+        } catch (err) {
+          console.error("Fetch error:", err);
+          setStatus("Network/Fetch error. See console.", "va-dot-error");
+          setTtsStatus("network_error");
+        }
+      };
+
+      mediaRecorder.start();
+      micButton.classList.add("recording");
+      if (micLabel) micLabel.textContent = "Stop";
+      setStatus("Recording...", "va-dot-live");
+    } catch (err) {
+      console.error("Error starting recording:", err);
+      setStatus("Cannot access microphone.", "va-dot-error");
+      micButton.classList.remove("recording");
+      if (micLabel) micLabel.textContent = "Open Voice Link";
+    }
+  }
+
+  // ---------- Stop recording ----------
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+  }
+
+  // ---------- Button wiring ----------
+  micButton.addEventListener("click", () => {
+    console.log("[MatrixVA] micButton clicked");
+    if (!mediaRecorder || mediaRecorder.state === "inactive") {
+      startRecording();
+    } else {
+      stopRecording();
+    }
+  });
+
+  setStatus("Ready", "va-dot-idle");
+})();
