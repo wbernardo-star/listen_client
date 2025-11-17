@@ -1,3 +1,5 @@
+#playback+quota limit app.py
+
 import os
 import base64
 import uuid
@@ -25,25 +27,18 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 
 
-# ---------------------------------------------------------
-#  Whisper STT
-# ---------------------------------------------------------
 def transcribe_audio(path: str) -> str:
     with open(path, "rb") as f:
         res = openai_client.audio.transcriptions.create(
             model="whisper-1",
             file=f,
         )
-    # Depending on SDK version, res may have `.text` or be a plain string
     text = getattr(res, "text", None)
     if text is None:
         text = str(res)
     return (text or "").strip()
 
 
-# ---------------------------------------------------------
-#  MCP Orchestrator call (multi-session aware)
-# ---------------------------------------------------------
 def call_orchestrator(text: str, *, user_id: str, session_id: str, channel: str = "web_widget") -> dict:
     payload = {
         "channel": channel,
@@ -56,12 +51,25 @@ def call_orchestrator(text: str, *, user_id: str, session_id: str, channel: str 
     return resp.json()
 
 
-# ---------------------------------------------------------
-#  ElevenLabs TTS
-# ---------------------------------------------------------
 def elevenlabs_tts(text: str):
+    """
+    Returns (audio_base64, mime, tts_status)
+
+    tts_status can be:
+      - "ok"
+      - "missing_api_key"
+      - "quota_exceeded"
+      - "auth_error"
+      - "rate_limited"
+      - "network_error"
+      - "error"
+    """
     if not ELEVENLABS_API_KEY:
-        return None, None
+        print("[TTS] ELEVENLABS_API_KEY missing")
+        return None, None, "missing_api_key"
+
+    if not text:
+        return None, None, "error"
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
     headers = {
@@ -77,22 +85,32 @@ def elevenlabs_tts(text: str):
             "similarity_boost": 0.75,
         },
     }
+
     try:
         resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
         resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code
+        print("[TTS] ElevenLabs HTTP error:", status_code, e)
+
+        if status_code == 402:
+            return None, None, "quota_exceeded"
+        elif status_code in (401, 403):
+            return None, None, "auth_error"
+        elif status_code == 429:
+            return None, None, "rate_limited"
+        else:
+            return None, None, "error"
     except Exception as e:
-        print("ElevenLabs TTS error:", e)
-        return None, None
+        print("[TTS] ElevenLabs network error:", e)
+        return None, None, "network_error"
 
     audio_bytes = resp.content
     audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
     mime = resp.headers.get("Content-Type", "audio/mpeg")
-    return audio_b64, mime
+    return audio_b64, mime, "ok"
 
 
-# ---------------------------------------------------------
-#  Routes
-# ---------------------------------------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -107,19 +125,15 @@ def api_voice():
     if file.filename == "":
         return jsonify({"error": "empty filename"}), 400
 
-    # Save temp audio file
     with NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
         file.save(tmp.name)
         path = tmp.name
 
     try:
-        # 1) STT
         user_text = transcribe_audio(path)
         if not user_text:
             return jsonify({"error": "empty transcription"}), 200
 
-        # 2) Multi-session IDs from frontend
-        #    (sent from app.js as FormData fields)
         device_id = request.form.get("device_id")
         session_id = request.form.get("session_id")
 
@@ -128,9 +142,8 @@ def api_voice():
         if not session_id:
             session_id = f"sess-{uuid.uuid4()}"
 
-        user_id = device_id  # device identity == user identity
+        user_id = device_id
 
-        # 3) Call MCP Orchestrator with per-device + per-session IDs
         orc = call_orchestrator(
             user_text,
             user_id=user_id,
@@ -142,8 +155,7 @@ def api_voice():
         if not reply_text:
             return jsonify({"error": "no reply_text", "raw": orc}), 200
 
-        # 4) TTS via ElevenLabs
-        audio_b64, mime = elevenlabs_tts(reply_text)
+        audio_b64, mime, tts_status = elevenlabs_tts(reply_text)
 
         return jsonify(
             {
@@ -151,6 +163,8 @@ def api_voice():
                 "reply_text": reply_text,
                 "audio_base64": audio_b64,
                 "audio_mime": mime,
+                "tts_status": tts_status,
+                "tts_quota_exceeded": (tts_status == "quota_exceeded"),
             }
         )
     finally:
