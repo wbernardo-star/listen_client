@@ -3,8 +3,7 @@
 // - Per-device ID  (persistent in localStorage)
 // - Per-page/tab SESSION_ID
 // - Shows both IDs on page
-// - Matrix UI: micButton, micLabel, statusDot, statusText, chat
-// - Records audio, sends to /api/voice, plays TTS
+// - Uses visible <audio id="replyAudio"> player for TTS
 // ============================================================
 
 (() => {
@@ -51,6 +50,7 @@
   const statusDot = document.getElementById("statusDot");
   const statusText = document.getElementById("statusText");
   const chat = document.getElementById("chat");
+  const replyAudioEl = document.getElementById("replyAudio");
 
   if (!micButton) {
     console.error("[MatrixVA] micButton not found in DOM");
@@ -119,19 +119,39 @@
             return;
           }
 
-          if (!res.ok || data.error) {
-            console.error("API error:", data);
-            setStatus("Error: " + (data.error || res.status), "va-dot-error");
-            return;
-          }
+          console.log("[MatrixVA] /api/voice response:", data);
 
-          appendChat("user", data.user_text || "");
-          appendChat("bot", data.reply_text || "");
+          if (data.user_text) appendChat("user", data.user_text);
+          if (data.reply_text) appendChat("bot", data.reply_text);
 
           if (data.audio_base64 && data.audio_mime) {
             const src = `data:${data.audio_mime};base64,${data.audio_base64}`;
-            const audio = new Audio(src);
-            audio.play();
+            console.log("[TTS] audio_base64 length:", data.audio_base64.length);
+            console.log("[TTS] audio_mime:", data.audio_mime);
+
+            if (replyAudioEl) {
+              replyAudioEl.src = src;
+              replyAudioEl.load();
+              replyAudioEl
+                .play()
+                .then(() => {
+                  console.log("[TTS] Playback started via <audio> element");
+                })
+                .catch((err) => {
+                  console.error("[TTS] Playback failed:", err);
+                });
+            } else {
+              // Fallback: use temporary Audio object if element missing
+              const audio = new Audio(src);
+              audio
+                .play()
+                .then(() => console.log("[TTS] Playback started via new Audio()"))
+                .catch((err) =>
+                  console.error("[TTS] Playback failed via new Audio():", err)
+                );
+            }
+          } else {
+            console.warn("[TTS] No audio_base64/audio_mime in response");
           }
 
           if (data.session_done) {
