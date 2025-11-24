@@ -10,8 +10,17 @@ from openai import OpenAI
 
 load_dotenv()
 
+# ---------------------------------------------------------
+#  Environment variables
+# ---------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
+
+# NEW: Orchestrator auth-related env vars
+ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")
+ORCHESTRATOR_API_KEY_HEADER = os.getenv("ORCHESTRATOR_API_KEY_HEADER", "Authorization")
+ORCHESTRATOR_API_KEY_PREFIX = os.getenv("ORCHESTRATOR_API_KEY_PREFIX", "Bearer ")
+
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
@@ -20,6 +29,9 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not set")
 if not ORCHESTRATOR_URL:
     raise RuntimeError("ORCHESTRATOR_URL not set")
+# If you want to require the orchestrator key, uncomment this:
+# if not ORCHESTRATOR_API_KEY:
+#     raise RuntimeError("ORCHESTRATOR_API_KEY not set")
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
@@ -43,14 +55,31 @@ def transcribe_audio(path: str) -> str:
 # ---------------------------------------------------------
 #  MCP Orchestrator call (multi-session aware)
 # ---------------------------------------------------------
-def call_orchestrator(text: str, *, user_id: str, session_id: str, channel: str = "web_widget") -> dict:
+def call_orchestrator(
+    text: str,
+    *,
+    user_id: str,
+    session_id: str,
+    channel: str = "web_widget",
+) -> dict:
     payload = {
         "channel": channel,
         "user_id": user_id,
         "session_id": session_id,
         "text": text,
     }
-    resp = httpx.post(ORCHESTRATOR_URL, json=payload, timeout=30.0)
+
+    # Build headers, including API key if present
+    headers = {}
+    if ORCHESTRATOR_API_KEY:
+        headers[ORCHESTRATOR_API_KEY_HEADER] = f"{ORCHESTRATOR_API_KEY_PREFIX}{ORCHESTRATOR_API_KEY}"
+
+    resp = httpx.post(
+        ORCHESTRATOR_URL,
+        json=payload,
+        headers=headers or None,  # if no headers, pass None
+        timeout=30.0,
+    )
     resp.raise_for_status()
     return resp.json()
 
