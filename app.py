@@ -59,7 +59,7 @@ def call_orchestrator(
     session_id: str,
     channel: str = "web_widget",
 ) -> dict:
-    # Shape payload the way the /canonical/voice endpoint expects:
+    # Shape payload the way /canonical/voice expects:
     # { "context": {...}, "session": {...}, "request": {...} }
     payload = {
         "context": {
@@ -68,6 +68,7 @@ def call_orchestrator(
         },
         "session": {
             "session_id": session_id,
+            "user_id": user_id,  # required according to error: body.session.user_id
         },
         "request": {
             "type": "input_text",
@@ -83,7 +84,7 @@ def call_orchestrator(
 
     resp = httpx.post(
         ORCHESTRATOR_URL,
-        json=payload,   # httpx will send JSON body
+        json=payload,
         headers=headers,
         timeout=30.0,
     )
@@ -170,14 +171,12 @@ def openai_tts_fallback(text: str):
         return None, None
 
     try:
-        # Adjust model/voice if your account uses different names
         audio = openai_client.audio.speech.create(
             model="gpt-4o-mini-tts",   # or "tts-1" / another available TTS model
             voice="alloy",             # default OpenAI voice
             input=text,
         )
 
-        # For newer OpenAI clients, audio.read() returns raw bytes
         audio_bytes = audio.read()
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         mime = "audio/mpeg"
@@ -194,17 +193,45 @@ def openai_tts_fallback(text: str):
 # ---------------------------------------------------------
 @app.route("/")
 def index():
+    # Just render the page; user_id cookie will be created on first /api/voice call
     return render_template("index.html")
 
 
 @app.route("/api/voice", methods=["POST"])
 def api_voice():
+    # --- Persistent user_id via cookie ---
+    user_id = request.cookies.get("voice_user_id")
+    if not user_id:
+        user_id = f"user-{uuid.uuid4()}"  # e.g. user-7c0c8c3a-bd38-4a9c-b9b4-1d28d2e3c4ff
+
+    # Optional: session_id can still come from frontend or be generated per request
+    session_id = request.form.get("session_id")
+    if not session_id:
+        session_id = f"sess-{uuid.uuid4()}"
+
+    # Early error: no audio
     if "audio" not in request.files:
-        return jsonify({"error": "no audio"}), 400
+        resp = jsonify({"error": "no audio"})
+        resp.set_cookie(
+            "voice_user_id",
+            user_id,
+            max_age=60 * 60 * 24 * 365,  # 1 year
+            httponly=True,
+            samesite="Lax",
+        )
+        return resp, 400
 
     file = request.files["audio"]
     if file.filename == "":
-        return jsonify({"error": "empty filename"}), 400
+        resp = jsonify({"error": "empty filename"})
+        resp.set_cookie(
+            "voice_user_id",
+            user_id,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            samesite="Lax",
+        )
+        return resp, 400
 
     # Save temp audio file
     with NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
@@ -215,20 +242,17 @@ def api_voice():
         # 1) STT (Whisper)
         user_text = transcribe_audio(path)
         if not user_text:
-            return jsonify({"error": "empty transcription"}), 200
+            resp = jsonify({"error": "empty transcription"})
+            resp.set_cookie(
+                "voice_user_id",
+                user_id,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                samesite="Lax",
+            )
+            return resp, 200
 
-        # 2) Multi-session IDs from frontend
-        device_id = request.form.get("device_id")
-        session_id = request.form.get("session_id")
-
-        if not device_id:
-            device_id = f"device-anon-{uuid.uuid4()}"
-        if not session_id:
-            session_id = f"sess-{uuid.uuid4()}"
-
-        user_id = device_id
-
-        # 3) Call MCP Orchestrator
+        # 2) Call MCP Orchestrator
         orc = call_orchestrator(
             user_text,
             user_id=user_id,
@@ -238,35 +262,61 @@ def api_voice():
 
         # If orchestrator returned an error, surface it to the client
         if isinstance(orc, dict) and orc.get("error"):
-            return jsonify(
+            resp = jsonify(
                 {
                     "error": "orchestrator_call_failed",
                     "details": orc,
                 }
-            ), 502
+            )
+            resp.set_cookie(
+                "voice_user_id",
+                user_id,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                samesite="Lax",
+            )
+            return resp, 502
 
         reply_text = orc.get("reply_text") or orc.get("reply", {}).get("reply_text")
         if not reply_text:
-            return jsonify({"error": "no reply_text", "raw": orc}), 200
+            resp = jsonify({"error": "no reply_text", "raw": orc})
+            resp.set_cookie(
+                "voice_user_id",
+                user_id,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                samesite="Lax",
+            )
+            return resp, 200
 
-        # 4) TTS: try ElevenLabs first
+        # 3) TTS: try ElevenLabs first
         audio_b64, mime = elevenlabs_tts(reply_text)
 
-        # 5) If ElevenLabs fails → fallback to OpenAI TTS
+        # 4) If ElevenLabs fails → fallback to OpenAI TTS
         tts_provider = "elevenlabs"
         if not audio_b64:
             audio_b64, mime = openai_tts_fallback(reply_text)
             tts_provider = "openai" if audio_b64 else "none"
 
-        return jsonify(
+        resp = jsonify(
             {
                 "user_text": user_text,
                 "reply_text": reply_text,
                 "audio_base64": audio_b64,
                 "audio_mime": mime,
-                "tts_provider": tts_provider,  # optional debug info
+                "tts_provider": tts_provider,
+                "user_id": user_id,
+                "session_id": session_id,
             }
         )
+        resp.set_cookie(
+            "voice_user_id",
+            user_id,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            samesite="Lax",
+        )
+        return resp
 
     finally:
         try:
