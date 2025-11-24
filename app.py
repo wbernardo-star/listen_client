@@ -3,7 +3,6 @@
 import os
 import base64
 import uuid
-from datetime import datetime, timezone
 from tempfile import NamedTemporaryFile
 
 from flask import Flask, render_template, request, jsonify
@@ -17,15 +16,13 @@ load_dotenv()
 #  Environment variables
 # ---------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
-ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")  # should match your PowerShell $apiKey
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")  # e.g. https://.../canonical/voice
+ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")  # adapter-super-secret-key-1
 
-# Optional tuning / metadata
+# Optional context metadata
+ORCHESTRATOR_LOCALE = os.getenv("ORCHESTRATOR_LOCALE", "en-US")
 ORCHESTRATOR_TENANT = os.getenv("ORCHESTRATOR_TENANT", "default-tenant")
 ORCHESTRATOR_CLIENT_APP = os.getenv("ORCHESTRATOR_CLIENT_APP", "voice-widget")
-ORCHESTRATOR_LLM_MODEL_HINT = os.getenv("ORCHESTRATOR_LLM_MODEL_HINT", "gpt-4.1-mini")
-ORCHESTRATOR_LLM_TEMPERATURE = float(os.getenv("ORCHESTRATOR_LLM_TEMPERATURE", "0.2"))
-ORCHESTRATOR_LOCALE = os.getenv("ORCHESTRATOR_LOCALE", "en-US")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
@@ -58,7 +55,7 @@ def transcribe_audio(path: str) -> str:
 
 
 # ---------------------------------------------------------
-#  MCP Orchestrator call (Canonical Envelope v1.1)
+#  MCP Orchestrator call (for /canonical/voice)
 # ---------------------------------------------------------
 def call_orchestrator(
     text: str,
@@ -67,51 +64,37 @@ def call_orchestrator(
     session_id: str,
     channel: str = "web_widget",
 ) -> dict:
-    # Timestamp in ISO-8601 with Z suffix
-    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    # You can make conversation_id == session_id for now
-    conversation_id = session_id
-    # For turn, we start at 1 (you can track and increment per session if you like)
-    turn = 1
-
-    trace_id = f"trace-{uuid.uuid4()}"
-    span_id = f"span-inbound-{uuid.uuid4()}"
-    message_id = f"msg-{uuid.uuid4()}"
+    """
+    Call the /canonical/voice endpoint with the shape it expects:
+    {
+      "context": { ... },
+      "session": { ... },
+      "request": {
+        "type": "text" | "audio",
+        "text": "<user text>"
+      }
+    }
+    """
 
     payload = {
-        "version": "1.1",
-        "timestamp": timestamp,
         "context": {
-            "channel": "web",        # canonical channel name
-            "device": "browser",
+            "channel": channel,
+            "user_id": user_id,
+            # You can add more context if your adapter uses it:
             "locale": ORCHESTRATOR_LOCALE,
             "tenant": ORCHESTRATOR_TENANT,
             "client_app": ORCHESTRATOR_CLIENT_APP,
-            "llm": {
-                "model_hint": ORCHESTRATOR_LLM_MODEL_HINT,
-                "temperature": ORCHESTRATOR_LLM_TEMPERATURE,
-            },
         },
         "session": {
-            "session_id": f"{user_id}:{channel}",
-            "conversation_id": conversation_id,
+            "session_id": session_id,
             "user_id": user_id,
-            "turn": turn,
         },
         "request": {
-            "type": "text",     # <- matches your spec
-            "text": text,
-            "intent_override": None,
+            "type": "text",   # <- IMPORTANT: 'text' instead of 'input_text'
+            "text": text,     # <- IMPORTANT: 'text' field instead of 'input_text'
             "metadata": {
                 "raw_transcript": text,
-                "confidence": 1.0,  # we don't have a real score from Whisper, so assume 1.0
             },
-        },
-        "observability": {
-            "trace_id": trace_id,
-            "span_id": span_id,
-            "message_id": message_id,
         },
     }
 
@@ -229,27 +212,29 @@ def openai_tts_fallback(text: str):
 # ---------------------------------------------------------
 @app.route("/")
 def index():
+    # Just render the page; user_id cookie will be created on first /api/voice call
     return render_template("index.html")
 
 
 @app.route("/api/voice", methods=["POST"])
 def api_voice():
-    # Persistent user_id via cookie
+    # --- Persistent user_id via cookie ---
     user_id = request.cookies.get("voice_user_id")
     if not user_id:
         user_id = f"user-{uuid.uuid4()}"
 
+    # Session can be passed from frontend or generated server-side
     session_id = request.form.get("session_id")
     if not session_id:
         session_id = f"sess-{uuid.uuid4()}"
 
-    # No audio?
+    # Early error: no audio
     if "audio" not in request.files:
         resp = jsonify({"error": "no audio"})
         resp.set_cookie(
             "voice_user_id",
             user_id,
-            max_age=60 * 60 * 24 * 365,
+            max_age=60 * 60 * 24 * 365,  # 1 year
             httponly=True,
             samesite="Lax",
         )
@@ -286,7 +271,7 @@ def api_voice():
             )
             return resp, 200
 
-        # 2) Call Orchestrator with canonical envelope
+        # 2) Call MCP Orchestrator
         orc = call_orchestrator(
             user_text,
             user_id=user_id,
@@ -294,6 +279,7 @@ def api_voice():
             channel="web_widget",
         )
 
+        # If orchestrator returned an error, surface it to the client
         if isinstance(orc, dict) and orc.get("error"):
             resp = jsonify(
                 {
@@ -310,10 +296,14 @@ def api_voice():
             )
             return resp, 502
 
-        # Adjust this depending on how your orchestrator returns text
-        reply_text = orc.get("reply_text") or orc.get("reply", {}).get("reply_text")
+        # TODO: adapt this to your actual orchestrator response shape
+        reply_text = (
+            orc.get("reply_text")
+            or (orc.get("reply") or {}).get("reply_text")
+            or orc.get("text")
+        )
+
         if not reply_text:
-            # If your canonical /message returns a different field, you may need to adapt this.
             resp = jsonify({"error": "no reply_text", "raw": orc})
             resp.set_cookie(
                 "voice_user_id",
@@ -324,8 +314,10 @@ def api_voice():
             )
             return resp, 200
 
-        # 3) TTS
+        # 3) TTS: try ElevenLabs first
         audio_b64, mime = elevenlabs_tts(reply_text)
+
+        # 4) If ElevenLabs fails → fallback to OpenAI TTS
         tts_provider = "elevenlabs"
         if not audio_b64:
             audio_b64, mime = openai_tts_fallback(reply_text)
