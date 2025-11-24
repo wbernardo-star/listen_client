@@ -17,7 +17,7 @@ load_dotenv()
 # ---------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
-ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")  # must match your PowerShell $apiKey
+ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY") 
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
@@ -73,22 +73,42 @@ def call_orchestrator(
     # }
     headers = {
         "Content-Type": "application/json",
+        "Accept": "application/json",
         "X-API-Key": ORCHESTRATOR_API_KEY,
     }
 
-    # Optional debug:
-    # print("Orchestrator URL:", ORCHESTRATOR_URL)
-    # print("Orchestrator headers:", headers)
-    # print("Orchestrator payload:", payload)
-
     resp = httpx.post(
         ORCHESTRATOR_URL,
-        json=payload,             # httpx will send JSON body
+        json=payload,   # httpx will send JSON body
         headers=headers,
         timeout=30.0,
     )
-    resp.raise_for_status()
-    return resp.json()
+
+    # If the orchestrator returns an error, don't raise — surface details instead
+    if resp.status_code >= 400:
+        print("=== Orchestrator HTTP error ===")
+        print("Status :", resp.status_code)
+        print("URL    :", ORCHESTRATOR_URL)
+        print("Headers:", headers)
+        print("Body   :", resp.text)
+        print("Payload:", payload)
+
+        return {
+            "error": "orchestrator_http_error",
+            "status_code": resp.status_code,
+            "body": resp.text,
+        }
+
+    # If success, return JSON payload
+    try:
+        return resp.json()
+    except ValueError:
+        # Not JSON, return raw body
+        return {
+            "error": "orchestrator_non_json_response",
+            "status_code": resp.status_code,
+            "body": resp.text,
+        }
 
 
 # ---------------------------------------------------------
@@ -212,6 +232,15 @@ def api_voice():
             channel="web_widget",
         )
 
+        # If orchestrator returned an error, surface it to the client
+        if isinstance(orc, dict) and orc.get("error"):
+            return jsonify(
+                {
+                    "error": "orchestrator_call_failed",
+                    "details": orc,
+                }
+            ), 502
+
         reply_text = orc.get("reply_text") or orc.get("reply", {}).get("reply_text")
         if not reply_text:
             return jsonify({"error": "no reply_text", "raw": orc}), 200
@@ -243,4 +272,4 @@ def api_voice():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True) True)
