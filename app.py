@@ -1,3 +1,5 @@
+#listenclient fix app.py
+
 import os
 import base64
 import uuid
@@ -57,18 +59,22 @@ def call_orchestrator(
     session_id: str,
     channel: str = "web_widget",
 ) -> dict:
+    # Shape payload the way the /canonical/voice endpoint expects:
+    # { "context": {...}, "session": {...}, "request": {...} }
     payload = {
-        "channel": channel,
-        "user_id": user_id,
-        "session_id": session_id,
-        "text": text,
+        "context": {
+            "channel": channel,
+            "user_id": user_id,
+        },
+        "session": {
+            "session_id": session_id,
+        },
+        "request": {
+            "type": "input_text",
+            "input_text": text,
+        },
     }
 
-    # Match your working PowerShell example:
-    # $headers = @{
-    #   "Content-Type" = "application/json"
-    #   "X-API-Key"    = $apiKey
-    # }
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
