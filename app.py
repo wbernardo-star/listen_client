@@ -17,11 +17,7 @@ load_dotenv()
 # ---------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
-
-# Orchestrator auth-related env vars
-ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")
-ORCHESTRATOR_API_KEY_HEADER = os.getenv("ORCHESTRATOR_API_KEY_HEADER") or "Authorization"
-ORCHESTRATOR_API_KEY_PREFIX = os.getenv("ORCHESTRATOR_API_KEY_PREFIX", "Bearer ")
+ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")  # must match your PowerShell $apiKey
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
@@ -31,41 +27,11 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not set")
 if not ORCHESTRATOR_URL:
     raise RuntimeError("ORCHESTRATOR_URL not set")
-# If you want to require the orchestrator key, uncomment this:
-# if not ORCHESTRATOR_API_KEY:
-#     raise RuntimeError("ORCHESTRATOR_API_KEY not set")
+if not ORCHESTRATOR_API_KEY:
+    raise RuntimeError("ORCHESTRATOR_API_KEY not set (should be your adapter-super-secret-key-1)")
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
-
-
-# ---------------------------------------------------------
-#  Helper: build safe orchestrator headers
-# ---------------------------------------------------------
-def build_orchestrator_headers() -> dict:
-    """
-    Build headers for the orchestrator call, sanitizing the header name.
-    Prevents errors like:
-      httpx.LocalProtocolError: Illegal header name b'Content-type:applicatio/json'
-    """
-    headers = {}
-
-    if not ORCHESTRATOR_API_KEY:
-        return headers
-
-    header_name = (ORCHESTRATOR_API_KEY_HEADER or "Authorization").strip()
-
-    # If env accidentally contains something like "Content-type:applicatio/json"
-    # (with colon or spaces), httpx will crash. Guard against that.
-    if ":" in header_name or " " in header_name:
-        print(
-            f"[Orchestrator] Invalid header name from env: {header_name!r}, "
-            "falling back to 'Authorization'"
-        )
-        header_name = "Authorization"
-
-    headers[header_name] = f"{ORCHESTRATOR_API_KEY_PREFIX}{ORCHESTRATOR_API_KEY}"
-    return headers
 
 
 # ---------------------------------------------------------
@@ -100,14 +66,25 @@ def call_orchestrator(
         "text": text,
     }
 
-    headers = build_orchestrator_headers()
-    # Optional: debug what actually gets sent
-    # print("ORCHESTRATOR HEADERS:", headers)
+    # Match your working PowerShell example:
+    # $headers = @{
+    #   "Content-Type" = "application/json"
+    #   "X-API-Key"    = $apiKey
+    # }
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": ORCHESTRATOR_API_KEY,
+    }
+
+    # Optional debug:
+    # print("Orchestrator URL:", ORCHESTRATOR_URL)
+    # print("Orchestrator headers:", headers)
+    # print("Orchestrator payload:", payload)
 
     resp = httpx.post(
         ORCHESTRATOR_URL,
-        json=payload,
-        headers=headers or None,  # if no headers, pass None
+        json=payload,             # httpx will send JSON body
+        headers=headers,
         timeout=30.0,
     )
     resp.raise_for_status()
