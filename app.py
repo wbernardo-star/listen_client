@@ -1,3 +1,5 @@
+#listening client app.py FIX
+
 import os
 import base64
 import uuid
@@ -16,9 +18,9 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
 
-# NEW: Orchestrator auth-related env vars
+# Orchestrator auth-related env vars
 ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")
-ORCHESTRATOR_API_KEY_HEADER = os.getenv("ORCHESTRATOR_API_KEY_HEADER", "Authorization")
+ORCHESTRATOR_API_KEY_HEADER = os.getenv("ORCHESTRATOR_API_KEY_HEADER") or "Authorization"
 ORCHESTRATOR_API_KEY_PREFIX = os.getenv("ORCHESTRATOR_API_KEY_PREFIX", "Bearer ")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -35,6 +37,35 @@ if not ORCHESTRATOR_URL:
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
+
+
+# ---------------------------------------------------------
+#  Helper: build safe orchestrator headers
+# ---------------------------------------------------------
+def build_orchestrator_headers() -> dict:
+    """
+    Build headers for the orchestrator call, sanitizing the header name.
+    Prevents errors like:
+      httpx.LocalProtocolError: Illegal header name b'Content-type:applicatio/json'
+    """
+    headers = {}
+
+    if not ORCHESTRATOR_API_KEY:
+        return headers
+
+    header_name = (ORCHESTRATOR_API_KEY_HEADER or "Authorization").strip()
+
+    # If env accidentally contains something like "Content-type:applicatio/json"
+    # (with colon or spaces), httpx will crash. Guard against that.
+    if ":" in header_name or " " in header_name:
+        print(
+            f"[Orchestrator] Invalid header name from env: {header_name!r}, "
+            "falling back to 'Authorization'"
+        )
+        header_name = "Authorization"
+
+    headers[header_name] = f"{ORCHESTRATOR_API_KEY_PREFIX}{ORCHESTRATOR_API_KEY}"
+    return headers
 
 
 # ---------------------------------------------------------
@@ -69,10 +100,9 @@ def call_orchestrator(
         "text": text,
     }
 
-    # Build headers, including API key if present
-    headers = {}
-    if ORCHESTRATOR_API_KEY:
-        headers[ORCHESTRATOR_API_KEY_HEADER] = f"{ORCHESTRATOR_API_KEY_PREFIX}{ORCHESTRATOR_API_KEY}"
+    headers = build_orchestrator_headers()
+    # Optional: debug what actually gets sent
+    # print("ORCHESTRATOR HEADERS:", headers)
 
     resp = httpx.post(
         ORCHESTRATOR_URL,
