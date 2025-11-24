@@ -1,5 +1,3 @@
-#listening client app.py FIX
-
 import os
 import base64
 import uuid
@@ -17,7 +15,7 @@ load_dotenv()
 # ---------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
-ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY") 
+ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY")  # should match your PowerShell $apiKey
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
